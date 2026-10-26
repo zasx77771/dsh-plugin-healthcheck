@@ -37,11 +37,6 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [],
-      "immediately": true,
-      "platform": "web"
     }
   },
   "scripts": {
