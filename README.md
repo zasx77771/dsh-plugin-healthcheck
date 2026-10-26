@@ -5,7 +5,7 @@
 
 `#dsh-plugin` · DeepSeek Harness (DSH) · TypeScript · turtle-ui
 
-## 关于这个 fork（0.2.1）
+## 关于这个 fork（0.2.2）
 
 上游 [`chenw2759-wq/dsh-plugin-healthcheck`](https://github.com/chenw2759-wq/dsh-plugin-healthcheck) 0.1.0 针对 DSH `0.1.0-rc.6`。在 DSH 桌面版 `0.2.1-rc.x` 上，它装得上但**完全没有反应**，实测是三层独立故障叠在一起：
 
@@ -15,7 +15,7 @@
 
 本 fork 的改动：
 
-| 适配点 | 上游 0.1.0 | 本 fork 0.2.1 |
+| 适配点 | 上游 0.1.0 | 本 fork 0.2.2 |
 |---|---|---|
 | `!!js` YAML schema | 静态 `import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'` | 用 `js-yaml` 的 `Type` 自建（支持 `!!js` / `!!js/function` / sequence / mapping），对 harness 核心包**零运行时依赖** |
 | harness 安装根 | `createRequire().resolve('@deepseek-ai/dsh-app-boot/package.json')`，失败即抛 | 三级回退：`$DSH_HOME/profiles/node_modules` → `createRequire` → `<exe>/resources/app.asar/dsh/node_modules`；全失败返回 `undefined`，inventory 降级成 `builtin: []` 而不是 400 |
@@ -25,6 +25,9 @@
 | profile 解析 | 硬编码 `'web'`（4 处） | `resolveProfileName()`：`DSH_PROFILE` → `desktop` → `web` → 其它有 manifest 的 profile |
 | 修复提示词 | 写死作者机器路径（`M:\dsh\node_modules`、`C:/Users/cysja/...`、`~/.dsh/profiles/web`） | 用运行时的 `ctx.profileDir` / `ctx.home` / `~/.dsh/profiles/<profile>` |
 | `peerDependencies` | 4 个 `@deepseek-ai/*` peer | 只留 `react`（避免 pnpm `autoInstallPeers` 装出核心包副本） |
+| 依赖可解析（C4） | 每个依赖 spawn 一次 `import.meta.resolve`，宿主注入的 external 与「只有子路径导出」的包全被误报 | 跳过宿主注入白名单（`@deepseek-ai/*`、`react*`）；改为「磁盘上有该包即视为可解析」+「插件真的 import 了才报」，不再起子进程 |
+| 高危副本（C3） | 一律提供「一键删除副本」 | 本机没有共享层 `~/.dsh/profiles/node_modules` 时降级为提示词——删掉副本反而让包彻底解析不到 |
+| `~/.dsh/cordis.patch.yml` 缺失 | 自动回滚写文件即失败 | `rollbackPlugin()` 缺文件时先建 `[]` 再写；`undoRollback()` 缺文件直接返回「无需撤销」 |
 
 注意事项：
 

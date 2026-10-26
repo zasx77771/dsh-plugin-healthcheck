@@ -99,10 +99,56 @@ describe('C4 dependency resolvability', () => {
       type: 'module',
       dependencies: { 'this-package-cannot-exist-xyz': '^9.9.9' },
     }), 'utf8')
+    mkdirSync(join(dir, 'lib'), { recursive: true })
+    writeFileSync(join(dir, 'lib', 'index.js'), "import anything from 'this-package-cannot-exist-xyz'\nexport default anything\n", 'utf8')
     const findings = checkDependencyResolvability(ctx, row('unresolvable-plugin', 'link:x', dir))
     const error = findings.find((f) => f.code === 'dep-unresolvable')
     expect(error).toBeDefined()
     expect(error?.severity).toBe('error')
+  })
+
+  it('ignores host-injected externals declared as dependencies', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-external-plugin-'))
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'host-external-plugin',
+      version: '1.0.0',
+      type: 'module',
+      dependencies: { '@deepseek-ai/cordis': '^4.0.0', react: '^18.2.0' },
+    }), 'utf8')
+    mkdirSync(join(dir, 'lib'), { recursive: true })
+    writeFileSync(join(dir, 'lib', 'index.js'), "import { Context } from '@deepseek-ai/cordis'\nimport { createElement } from 'react'\nexport const ok = [Context, createElement]\n", 'utf8')
+    expect(checkDependencyResolvability(ctx, row('host-external-plugin', 'link:x', dir))).toHaveLength(0)
+  })
+
+  it('ignores a declared-but-never-imported dependency (types-only / optional)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'optional-dep-plugin-'))
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'optional-dep-plugin',
+      version: '1.0.0',
+      type: 'module',
+      dependencies: { 'left-pad-nope': '^1.0.0' },
+    }), 'utf8')
+    mkdirSync(join(dir, 'lib'), { recursive: true })
+    writeFileSync(join(dir, 'lib', 'index.js'), '// optional integration: left-pad-nope is mentioned only in this comment\nexport const ok = true\n', 'utf8')
+    expect(checkDependencyResolvability(ctx, row('optional-dep-plugin', 'link:x', dir))).toHaveLength(0)
+  })
+
+  it('treats an installed-but-subpath-only package as resolvable', () => {
+    // @codemirror/legacy-modes has no root export: import.meta.resolve throws
+    // ERR_PACKAGE_PATH_NOT_EXPORTED even though the package is on disk.
+    const dir = mkdtempSync(join(tmpdir(), 'subpath-plugin-'))
+    const dep = join(dir, 'node_modules', '@codemirror', 'legacy-modes')
+    mkdirSync(dep, { recursive: true })
+    writeFileSync(join(dep, 'package.json'), JSON.stringify({ name: '@codemirror/legacy-modes', version: '6.5.3' }), 'utf8')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'subpath-plugin',
+      version: '1.0.0',
+      type: 'module',
+      dependencies: { '@codemirror/legacy-modes': '^6.5.3' },
+    }), 'utf8')
+    mkdirSync(join(dir, 'lib'), { recursive: true })
+    writeFileSync(join(dir, 'lib', 'index.js'), "import { shell } from '@codemirror/legacy-modes/mode/shell'\nexport const ok = shell\n", 'utf8')
+    expect(checkDependencyResolvability(ctx, row('subpath-plugin', 'link:x', dir))).toHaveLength(0)
   })
 
   it('stays quiet when every dep resolves', () => {

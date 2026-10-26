@@ -12,6 +12,20 @@ import { execFileSync } from 'node:child_process'
 import type { CheckFinding, RepairAction } from '../core/types.ts'
 import { HIGH_RISK_PACKAGES, resolveHomePatch, type PluginRow } from './env.ts'
 
+/**
+ * Packages the DSH runtime injects as externals. They never land in the profile
+ * tree (the host resolves `@deepseek-ai/*` for plugin code, and the client
+ * `__ModuleLoader__` `require` shim supplies react), so a bare-specifier
+ * resolution check must skip them or every plugin reports a false positive.
+ */
+const HOST_PROVIDED: RegExp[] = [
+  /^@deepseek-ai\//,
+  /^react$/,
+  /^react-dom(\/.*)?$/,
+  /^react\/.*$/,
+  /^@opencode(?:-ai)?\/plugin$/,
+]
+
 /** Context handed to every checker. */
 export interface CheckerContext {
   home: string
@@ -187,6 +201,12 @@ export function checkHighRiskCopies(ctx: CheckerContext, _row: PluginRow): Check
   const findings: CheckFinding[] = []
   const scopeDir = join(ctx.profileDir, 'node_modules', '@deepseek-ai')
   if (!existsSync(scopeDir)) return findings
+  // Deleting a real copy only helps when a shared layer can take over the
+  // resolution. Without ~/.dsh/profiles/node_modules the package would simply
+  // become unresolvable — worse than a latent dual-instance risk — so the
+  // destructive auto-fix is only offered when that layer exists.
+  const sharedLayer = join(ctx.home, 'profiles', 'node_modules')
+  const sharedLayerExists = existsSync(sharedLayer)
   for (const pkg of HIGH_RISK_PACKAGES) {
     const path = join(scopeDir, pkg)
     try {
@@ -195,13 +215,20 @@ export function checkHighRiskCopies(ctx: CheckerContext, _row: PluginRow): Check
         findings.push({
           layer: 'l0', code: 'harness-copy', severity: 'error', plugin: `@deepseek-ai/${pkg}`,
           message: `检测到 harness 核心包独立副本 @deepseek-ai/${pkg}（真实目录，非软链）— 与安装本体形成模块双实例，Symbol/类身份错位会导致工具取不到（prepare undefined）`,
-          evidence: [path],
-          fixKind: 'auto',
-          repair: {
-            kind: 'remove-copies',
-            path,
-            description: `删除危险副本 ${path}（插件将从共享层 ~/.dsh/profiles/node_modules 软链解析）`,
-          },
+          evidence: sharedLayerExists ? [path, `shared layer: ${sharedLayer}`] : [path, `missing shared layer: ${sharedLayer}`],
+          ...(sharedLayerExists
+            ? {
+                fixKind: 'auto' as const,
+                repair: {
+                  kind: 'remove-copies' as const,
+                  path,
+                  description: `删除危险副本 ${path}（插件将从共享层 ~/.dsh/profiles/node_modules 软链解析）`,
+                },
+              }
+            : {
+                fixKind: 'prompt' as const,
+                prompt: `${PROMPT_HEADER}\n\n问题：${path} 是 @deepseek-ai/ 核心包的真实副本，与安装本体可能形成模块双实例（Symbol/类身份错位，症状如 Cannot read properties of undefined (reading 'prepare')）。\n但本机没有共享层 ${sharedLayer}，删掉副本会让这个包彻底无法解析——比潜在的双实例风险更糟，所以这里不提供一键删除。\n正确处理顺序：\n1. 先只确认版本：读 harness 本体（resources/app.asar/dsh/node_modules/@deepseek-ai/${pkg}/package.json）里的版本，和副本比对；\n2. 版本不一致 → 双实例是预期状态，不要动；\n3. 版本一致且真的出现 Symbol/类身份错位 → 才考虑把副本换成指向本体的软链；\n4. 没有故障症状时，什么都不做。`,
+              }),
         })
       }
     } catch {
@@ -223,30 +250,71 @@ export function checkDependencyResolvability(ctx: CheckerContext, row: PluginRow
   const root = row.installedDir !== '' ? row.installedDir : (row.sourceDir ?? '')
   if (root === '') return []
   const findings: CheckFinding[] = []
+  const imported = collectRuntimeImports(root)
   const specs = [...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})]
   for (const spec of specs) {
-    let resolvable = false
-    try {
-      // Resolve relative to the plugin's own package.json — the anchor Node
-      // uses at runtime (source dir for link:, installed dir for file:).
-      execFileSync(process.execPath, ['--input-type=module', '-e', `console.log(import.meta.resolve(${JSON.stringify(spec)}))`], {
-        cwd: root, stdio: 'pipe', timeout: 10_000, encoding: 'utf8',
-      })
-      resolvable = true
-    } catch {
-      resolvable = false
-    }
-    if (!resolvable) {
-      findings.push({
-        layer: 'l0', code: 'dep-unresolvable', severity: 'error', plugin: row.name,
-        message: `${row.name} 的依赖 ${spec} 无法从 ${root} 解析 — 启动时 ERR_MODULE_NOT_FOUND`,
-        evidence: [`spec: ${spec}`, `anchor: ${root}`],
-        fixKind: 'prompt',
-        prompt: `${PROMPT_HEADER}\n\n问题：${row.name} import "${spec}" 无法从 ${root} 解析。\n判断：\n- 若插件是 link: → 在插件源码目录 pnpm install 装依赖，或改成 file: 依赖；\n- 若依赖是 harness 提供的（@deepseek-ai/*）→ 检查 ~/.dsh/profiles/node_modules 软链与版本；\n- 若是 peer 缺失 → 确认共享层已有该包，再决定 link: 或 file:。`,
-      })
-    }
+    // Host-injected externals are never on disk — resolving them proves nothing.
+    if (HOST_PROVIDED.some((re) => re.test(spec))) continue
+    const name = packageNameOf(spec)
+    // Present on disk but without a root export entry (ERR_PACKAGE_PATH_NOT_EXPORTED)
+    // is NOT a missing dependency: subpath-only packages are normal.
+    if (resolvePackageDir(root, name) !== undefined) continue
+    // Declared but never imported (types-only / optional integration) cannot break boot.
+    if (!imported.has(name)) continue
+    findings.push({
+      layer: 'l0', code: 'dep-unresolvable', severity: 'error', plugin: row.name,
+      message: `${row.name} 的依赖 ${spec} 无法从 ${root} 解析 — 启动时 ERR_MODULE_NOT_FOUND`,
+      evidence: [`spec: ${spec}`, `anchor: ${root}`],
+      fixKind: 'prompt',
+      prompt: `${PROMPT_HEADER}\n\n问题：${row.name} import "${spec}" 无法从 ${root} 解析。\n判断：\n- 若插件是 link: → 在插件源码目录 pnpm install 装依赖，或改成 file: 依赖；\n- 若依赖是 harness 提供的（@deepseek-ai/*）→ 检查 ~/.dsh/profiles/node_modules 软链与版本；\n- 若是 peer 缺失 → 确认共享层已有该包，再决定 link: 或 file:。`,
+    })
   }
   return findings
+}
+
+function packageNameOf(spec: string): string {
+  return spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]
+}
+
+/** 从 root 向上逐级找 node_modules/<pkg>；找到即视为可解析。 */
+function resolvePackageDir(root: string, name: string): string | undefined {
+  let dir = resolve(root)
+  for (let depth = 0; depth < 12; depth++) {
+    const candidate = join(dir, 'node_modules', name)
+    if (existsSync(join(candidate, 'package.json'))) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return undefined
+}
+
+/** 收集插件宿主代码里真实 import/require 的裸包名（注释里提到的不算）。 */
+function collectRuntimeImports(root: string): Set<string> {
+  const specs = new Set<string>()
+  const seen = new Set<string>()
+  const visit = (dir: string): void => {
+    if (seen.has(dir)) return
+    seen.add(dir)
+    let entries
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (entry.name === 'node_modules') continue
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) { visit(path); continue }
+      if (!/\.(?:js|mjs|cjs)$/.test(entry.name)) continue
+      let text: string
+      try { text = readFileSync(path, 'utf8') } catch { continue }
+      for (const match of text.matchAll(/(?:from\s*|require\(\s*|import\(\s*)['"]([^'"]+)['"]/g)) {
+        const spec = match[1]
+        if (spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('node:') || spec.startsWith('file:') || spec.startsWith('data:')) continue
+        specs.add(packageNameOf(spec))
+      }
+    }
+  }
+  for (const dir of ['lib', 'dist', 'build'].map((name) => join(root, name))) visit(dir)
+  if (seen.size === 0) visit(root)
+  return specs
 }
 
 /**

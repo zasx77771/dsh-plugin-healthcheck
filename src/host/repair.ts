@@ -11,7 +11,7 @@
  * @module dsh-plugin-healthcheck/host/repair
  */
 
-import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import yaml from 'js-yaml'
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
@@ -135,6 +135,9 @@ function repairRemoveCopies(path: string, home: string): RepairOutcome {
  */
 export function rollbackPlugin(pluginId: string, home = resolveHome()): RepairOutcome {
   const target = assertSafeTarget(resolveHomePatch(home), home)
+  // A missing home patch layer must not turn a failed trial run into an
+  // unrecoverable one: create the minimal `[]` shape the writer expects.
+  if (!existsSync(target)) writeFileSync(target, '[]\n', 'utf8')
   const content = readFileSync(target, 'utf8')
   if (hasDisabledRow(content, pluginId)) {
     return { action: 'write-patch', applied: false, message: `${pluginId} 已在 home 层禁用，无需重复写入` }
@@ -178,6 +181,9 @@ export function rollbackPlugin(pluginId: string, home = resolveHome()): RepairOu
 /** Undo a healthcheck rollback: remove the auto-rollback rows for one id. */
 export function undoRollback(pluginId: string, home = resolveHome()): RepairOutcome {
   const target = assertSafeTarget(resolveHomePatch(home), home)
+  if (!existsSync(target)) {
+    return { action: 'write-patch', applied: false, message: 'home 层补丁不存在，无需撤销' }
+  }
   const content = readFileSync(target, 'utf8')
   const marker = /^# healthcheck auto-rollback .*$\n- id: [^\n]+\n  disabled: true\n/gm
   let removed = 0
