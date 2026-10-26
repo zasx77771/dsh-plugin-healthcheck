@@ -67,6 +67,8 @@ export interface InventoryRow {
 
 /** The full plugin inventory: user profile plugins + harness built-ins. */
 export interface Inventory {
+  /** Profile the host resolved for this instance (`desktop` on the app). */
+  profileName?: string
   profile: InventoryRow[]
   builtin: InventoryRow[]
   counts: { profile: number; builtin: number; total: number }

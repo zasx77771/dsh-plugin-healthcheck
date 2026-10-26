@@ -5,6 +5,25 @@
 
 `#dsh-plugin` · DeepSeek Harness (DSH) · TypeScript · turtle-ui
 
+## 关于这个 fork（0.2.0）
+
+上游 [`chenw2759-wq/dsh-plugin-healthcheck`](https://github.com/chenw2759-wq/dsh-plugin-healthcheck) 0.1.0 针对 DSH `0.1.0-rc.6`。在 DSH 桌面版 `0.2.1-rc.x` 上装得上、跑不起来：插件声明了已不存在的 `@deepseek-ai/dsh-client-runtime`，客户端那一半因此**静默不 apply**（设置里看不到「插件检测」），宿主侧又把 profile 名硬编码成 `web`（桌面版跑的是 `desktop`，面板里会显示 0 个插件）。本 fork 修正这些点，其余逻辑与上游一致：
+
+| 适配点 | 上游 0.1.0 | 本 fork 0.2.0 |
+|---|---|---|
+| `dsh.client.inject` | `dsh-client-runtime` + `dsh-client-locale` | `dsh-client-locale` + `dsh-client-ui-settings`（0.2.x 实际存在的包） |
+| 客户端 context 类型 | `import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'` | 本地声明最小接口（该包只发布到 0.1.0-rc.6，0.2.x 无类型包） |
+| slot 注册 | `ctx.slots.register(...)` 未诊断 | 先 `ctx.get('slots')` 判空再注册，并 `inject: () => ({ fallbackT })` 兜住 0.2.x 不再自动注入 `t` 的情况 |
+| profile 解析 | 硬编码 `'web'`（4 处） | `resolveProfileName()`：`DSH_PROFILE` → `desktop` → `web` → 其它有 manifest 的 profile |
+| 修复提示词 | 写死作者机器路径（`M:\dsh\node_modules`、`C:/Users/cysja/...`、`~/.dsh/profiles/web`） | 用运行时的 `ctx.profileDir` / `ctx.home` / `~/.dsh/profiles/<profile>` |
+| `peerDependencies` | 4 个 `@deepseek-ai/*` peer | 只留 `react`（避免 pnpm `autoInstallPeers` 装出核心包副本，即本插件自己检测的 `harness-copy`） |
+
+注意事项：
+
+- 本仓库**直接改构建产物**（`lib/*.js`）并在 `src/*.ts` 同步同等改动。原因：`@deepseek-ai/dsh-client-*` 在 npm 上只有 `0.0.1-rc.1` 占位版，没有 0.2.x 的包和 `.d.ts`，`pnpm build` 无法在外部环境跑通。若你手上有对应版本的类型包，建议改为在 `src/` 里重新构建。
+- 装完仍需**重启 DSH**（客户端模块按进程缓存）后硬刷新页面，设置面板才会出现「插件检测」。
+- 面板里的 L1/L2 在 0.2.x 桌面版下依赖 harness 的 `dsh-app-boot` 等内部包；由宿主解析，插件目录里不要放这些包的副本。
+
 ## 截图
 
 设置面板 →「插件检测」：

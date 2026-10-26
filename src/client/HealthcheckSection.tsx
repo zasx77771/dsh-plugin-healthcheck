@@ -14,10 +14,12 @@ import css from './healthcheck.module.css'
 
 /** Props the section binds: locale reader + the shell's close affordance. */
 export interface HealthcheckSectionProps {
-  /** Locale reader for this section's copy. */
-  t: (key: HealthcheckKey) => string
+  /** Locale reader for this section's copy (injected by newer shells). */
+  t?: (key: HealthcheckKey) => string
+  /** Locale reader handed in through the slot's `inject` (0.2.x shells). */
+  fallbackT?: (key: HealthcheckKey) => string
   /** Close the settings panel (shell-owned). */
-  close: () => void
+  close?: () => void
 }
 
 const SEVERITY_CLASS: Record<string, string> = {
@@ -33,7 +35,7 @@ const LAYERS = ['l0', 'l1', 'l2', 'malware'] as const
  * @param props - locale copy and the close affordance.
  */
 export function HealthcheckSection(props: HealthcheckSectionProps): ReactNode {
-  const { t } = props
+  const t = props.t ?? props.fallbackT ?? ((key: HealthcheckKey): string => key)
   const apiRef = useRef<HealthcheckApi | null>(null)
   if (apiRef.current === null) apiRef.current = new HealthcheckApi()
   const api = apiRef.current

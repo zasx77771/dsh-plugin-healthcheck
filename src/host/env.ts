@@ -58,6 +58,33 @@ export function resolveProfileDir(name: string, home = resolveHome()): string {
   return join(home, 'profiles', name)
 }
 
+/**
+ * Resolve the profile this harness instance actually runs.
+ *
+ * The desktop app boots the `desktop` profile; CLI/web deploys boot `web`.
+ * Upstream 0.1.x hard-coded "web" at every call site, which made the panel
+ * read an empty (or absent) profile on the desktop build and report
+ * `profile: 0` plugins. Order: DSH_PROFILE, then `desktop`, then `web`,
+ * then the first other profile that actually has a manifest.
+ */
+export function resolveProfileName(home = resolveHome()): string {
+  const hasManifest = (name: string): boolean => existsSync(join(home, 'profiles', name, 'package.json'))
+  const fromEnv = process.env.DSH_PROFILE
+  if (fromEnv !== undefined && fromEnv !== '' && hasManifest(fromEnv)) return fromEnv
+  for (const name of ['desktop', 'web']) {
+    if (hasManifest(name)) return name
+  }
+  try {
+    const others = readdirSync(join(home, 'profiles'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && hasManifest(entry.name))
+      .map((entry) => entry.name)
+    if (others.length > 0) return others[0]
+  } catch {
+    // no profiles directory yet — fall through
+  }
+  return 'web'
+}
+
 /** The user plugin-source directory. */
 export function resolvePluginsDir(home = resolveHome()): string {
   return join(home, 'plugins')

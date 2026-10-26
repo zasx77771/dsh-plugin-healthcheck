@@ -11,7 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { Envelope, RepairAction } from '../core/types.ts'
 import { failEnvelope, okEnvelope } from '../core/types.ts'
-import { listBuiltinBundles, listProfilePlugins, resolveHome } from './env.ts'
+import { listBuiltinBundles, listProfilePlugins, resolveHome, resolveProfileName } from './env.ts'
 import { applyRepair, rollbackPlugin, undoRollback } from './repair.ts'
 import { getHistory, getRun, startRun } from './service.ts'
 
@@ -66,11 +66,13 @@ export function registerHealthcheckRoutes(ctx: Context): () => void {
 
     if (pathname === '/healthcheck/inventory' && req.method === 'GET') {
       const home = resolveHome()
-      const profileRows = listProfilePlugins('web', home)
+      const profileName = resolveProfileName(home)
+      const profileRows = listProfilePlugins(profileName, home)
       const builtinRows = listBuiltinBundles(home)
       const userNames = new Set(profileRows.map((row) => row.name))
       const builtin = builtinRows.filter((row) => !userNames.has(row.name))
       json(res, okEnvelope({
+        profileName,
         profile: profileRows.map((row) => ({
           name: row.name,
           spec: row.spec,
@@ -109,7 +111,7 @@ export function registerHealthcheckRoutes(ctx: Context): () => void {
         return
       }
       const runId = startRun({
-        profile: stringField(payload, 'profile') ?? 'web',
+        profile: stringField(payload, 'profile') ?? resolveProfileName(),
         plugin: stringField(payload, 'plugin') ?? undefined,
         layers: layers.length > 0 ? layers as ('l0' | 'l1' | 'l2' | 'malware')[] : undefined,
       })

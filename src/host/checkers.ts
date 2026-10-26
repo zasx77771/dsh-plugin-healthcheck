@@ -21,7 +21,7 @@ export interface CheckerContext {
 
 /** The repair prompt header shared by every LLM-guided fix. */
 const PROMPT_HEADER = `你是 DSH 插件的修复助手。铁律（违反即失败）：
-1. 严禁修改 harness 源码层（M:\\dsh\\node_modules、GitHub deepseek-harness）；
+1. 严禁修改 harness 源码层（DSH 安装目录内的 node_modules、GitHub deepseek-harness）；
 2. 只允许修改插件代码与配置层（~/.dsh/plugins/**、~/.dsh/profiles/**、~/.dsh/cordis.patch.yml）；
 3. 修完用「插件检测」重新验证，确认无 error 才算完成。`
 
@@ -156,7 +156,7 @@ export function checkDependencySpec(ctx: CheckerContext, row: PluginRow): CheckF
         kind: 'none',
         description: '需要 pnpm remove + add file:（见 prompt）',
       },
-      prompt: `${PROMPT_HEADER}\n\n问题：${row.name} 登记为 link: 但有运行时依赖。\n修复：\n  cd ~/.dsh/profiles/web\n  pnpm remove ${row.name}\n  pnpm add "file:C:/Users/cysja/.dsh/plugins/${basename(row.sourceDir ?? row.name)}"\n注意：直接改 package.json 再 pnpm install 不生效（lockfile 残留 link:），必须 remove + add。`,
+      prompt: `${PROMPT_HEADER}\n\n问题：${row.name} 登记为 link: 但有运行时依赖。\n修复：\n  cd ${ctx.profileDir}\n  pnpm remove ${row.name}\n  pnpm add "file:${ctx.home}/plugins/${basename(row.sourceDir ?? row.name)}"\n注意：直接改 package.json 再 pnpm install 不生效（lockfile 残留 link:），必须 remove + add。`,
     })
   }
   if (row.spec.startsWith('file:') && peers.some((p) => HIGH_RISK_PACKAGES.some((h) => p === `@deepseek-ai/${h}`))) {
@@ -173,7 +173,7 @@ export function checkDependencySpec(ctx: CheckerContext, row: PluginRow): CheckF
         message: `${row.name} 的 peer 依赖包含 harness 核心包（${corePeers.join(', ')}），且该 profile 未禁用 autoInstallPeers — file: 安装可能把它们装成嵌套副本，引发模块双实例（prepare undefined）`,
         evidence: [`peer: ${corePeers.join(', ')}`, 'autoInstallPeers: 未显式禁用'],
         fixKind: 'prompt',
-        prompt: `${PROMPT_HEADER}\n\n问题：${row.name} 的 peerDependencies 引用了 harness 核心包（${corePeers.join(', ')}），且 profile 的 pnpm-workspace.yaml 未设置 autoInstallPeers: false — file: 安装可能把它们装成独立副本，导致 Symbol/类身份错位（Cannot read properties of undefined (reading 'prepare')）。\n修复方向：\n1. 首选：在 profile 的 pnpm-workspace.yaml 加 autoInstallPeers: false（dsh 模板默认配置，peer 永不自动装副本）；\n2. 或插件改用 link:，依赖从共享层解析；\n3. 若副本已出现：删除副本 rm -rf ~/.dsh/profiles/web/node_modules/@deepseek-ai/{cordis,cosmokit,dsh-credentials,dsh-home-paths,dsh-tools,schemastery}`,
+        prompt: `${PROMPT_HEADER}\n\n问题：${row.name} 的 peerDependencies 引用了 harness 核心包（${corePeers.join(', ')}），且 profile 的 pnpm-workspace.yaml 未设置 autoInstallPeers: false — file: 安装可能把它们装成独立副本，导致 Symbol/类身份错位（Cannot read properties of undefined (reading 'prepare')）。\n修复方向：\n1. 首选：在 profile 的 pnpm-workspace.yaml 加 autoInstallPeers: false（dsh 模板默认配置，peer 永不自动装副本）；\n2. 或插件改用 link:，依赖从共享层解析；\n3. 若副本已出现：删除副本 rm -rf ${ctx.profileDir}/node_modules/@deepseek-ai/{cordis,cosmokit,dsh-credentials,dsh-home-paths,dsh-tools,schemastery}`,
       })
     }
   }
@@ -274,7 +274,7 @@ export function checkWindowsCommands(ctx: CheckerContext, row: PluginRow): Check
         message: `${row.name} 引用的外部命令 ${command} 在注册表 PATH 中找不到真 .exe — 后端进程（PowerShell 启动）执行时会 ENOENT`,
         evidence: [`command: ${command}`, 'check: where.exe 在注册表 PATH（HKCU/HKLM）中的 .exe'],
         fixKind: 'prompt',
-        prompt: `${PROMPT_HEADER}\n\n问题：${row.name} 调用外部命令 ${command}，Windows 后端进程找不到。\n注意三点（本次事故总结）：\n1. Node execFile(shell:false) 只认真实 .exe，不认 .cmd/.bat/shebang 脚本 → 需要编译 .exe 垫片（gcc + C 源码转发参数）；\n2. 垫片必须放在注册表 PATH（如 C:\\Users\\cysja\\AppData\\Roaming\\npm），Git Bash 的 ~/.local/bin 对 PowerShell 启动的后端无效；\n3. 脚本内路径用 os.homedir() + __dirname 推导，禁止硬编码。`,
+        prompt: `${PROMPT_HEADER}\n\n问题：${row.name} 调用外部命令 ${command}，Windows 后端进程找不到。\n注意三点（本次事故总结）：\n1. Node execFile(shell:false) 只认真实 .exe，不认 .cmd/.bat/shebang 脚本 → 需要编译 .exe 垫片（gcc + C 源码转发参数）；\n2. 垫片必须放在注册表 PATH（如 %APPDATA%\\npm），Git Bash 的 ~/.local/bin 对 PowerShell 启动的后端无效；\n3. 脚本内路径用 os.homedir() + __dirname 推导，禁止硬编码。`,
       })
     }
   }
@@ -327,7 +327,7 @@ export function checkLockfileConsistency(ctx: CheckerContext, row: PluginRow): C
       message: `${row.name} 的 package.json specifier 是 ${expected} 但 lockfile 仍记录 ${actual} — pnpm 没有重解析，改 specifier 不会生效`,
       evidence: [`specifier: ${row.spec}`, `lockfile version: ${actual}:...`],
       fixKind: 'prompt',
-      prompt: `${PROMPT_HEADER}\n\n问题：${row.name} 改过依赖类型（link:/file:）但 pnpm-lock.yaml 没重解析。\n修复（必须 remove + add，直接改 package.json 无效）：\n  cd ~/.dsh/profiles/web\n  pnpm remove ${row.name}\n  pnpm add "${row.spec}"\n  grep -A2 '${row.name}:' pnpm-lock.yaml   # 确认 version: 前缀已变`,
+      prompt: `${PROMPT_HEADER}\n\n问题：${row.name} 改过依赖类型（link:/file:）但 pnpm-lock.yaml 没重解析。\n修复（必须 remove + add，直接改 package.json 无效）：\n  cd ${ctx.profileDir}\n  pnpm remove ${row.name}\n  pnpm add "${row.spec}"\n  grep -A2 '${row.name}:' pnpm-lock.yaml   # 确认 version: 前缀已变`,
     })
   }
   return findings
@@ -364,7 +364,7 @@ export function checkDisabledPlugins(ctx: CheckerContext, row: PluginRow): Check
       `installed: ${row.installedDir !== '' ? row.installedDir : '(not installed)'}`,
     ],
     fixKind: 'prompt',
-    prompt: `${PROMPT_HEADER}\n\n问题：${row.name} 因事故被禁用（${layers}），但根因未修复。\n排查方向：\n1. 先跑「插件检测」全量扫描该插件，看 L0 各项是否已修复（依赖可解析/副本/harness 身份等）；\n2. 若根因已修复：从 ~/.dsh/cordis.patch.yml 删除该 disabled 行（或 dsh healthcheck rollback --undo），重启后端验证；\n3. 若根因无法修复：从 profile 彻底移除 —— cd ~/.dsh/profiles/web && pnpm remove ${row.name}，并删除插件目录；\n4. 不要长期保留 disabled 行 —— 被禁用的插件仍随 pnpm install 装出 peer 副本，是持续的隐患源。`,
+    prompt: `${PROMPT_HEADER}\n\n问题：${row.name} 因事故被禁用（${layers}），但根因未修复。\n排查方向：\n1. 先跑「插件检测」全量扫描该插件，看 L0 各项是否已修复（依赖可解析/副本/harness 身份等）；\n2. 若根因已修复：从 ~/.dsh/cordis.patch.yml 删除该 disabled 行（或 dsh healthcheck rollback --undo），重启后端验证；\n3. 若根因无法修复：从 profile 彻底移除 —— cd ${ctx.profileDir} && pnpm remove ${row.name}，并删除插件目录；\n4. 不要长期保留 disabled 行 —— 被禁用的插件仍随 pnpm install 装出 peer 副本，是持续的隐患源。`,
   }]
 }
 

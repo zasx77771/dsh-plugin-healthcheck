@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import type { CheckFinding, CheckLayer, HistoryRecord, SmokeResult } from '../core/types.ts'
 import { L0_CHECKERS, checkGlobalL0, checkHighRiskCopies } from './checkers.ts'
 import { checkCordisUsage } from './cordis.ts'
-import { listBuiltinBundles, listProfilePlugins, resolveHome, type PluginRow } from './env.ts'
+import { listBuiltinBundles, listProfilePlugins, resolveHome, resolveProfileName, type PluginRow } from './env.ts'
 import { scanPluginForMalware } from './malware.ts'
 import { appendHistory, readHistory } from './repair.ts'
 import { checkConfigComposition, runSmokeBoot } from './verify.ts'
@@ -44,7 +44,7 @@ export interface RunRequest {
 /** Kick off a run in the background and return its id. */
 export function startRun(request: RunRequest): string {
   const home = resolveHome()
-  const profile = request.profile ?? 'web'
+  const profile = request.profile ?? resolveProfileName(home)
   const layers = request.layers ?? ['l0', 'l1', 'l2', 'malware']
   const runId = randomUUID()
   const state: RunState = {
@@ -172,8 +172,9 @@ function buildHistoryRecord(state: RunState): HistoryRecord {
 
 /** Human summary of the plugin inventory (for the panel header). */
 export function inventorySummary(): { total: number; bundles: number; builtin: number } {
-  const rows = listProfilePlugins('web', resolveHome())
-  const builtin = listBuiltinBundles(resolveHome())
+  const home = resolveHome()
+  const rows = listProfilePlugins(resolveProfileName(home), home)
+  const builtin = listBuiltinBundles(home)
   return { total: rows.length + builtin.length, bundles: rows.filter((r) => r.bundle).length, builtin: builtin.length }
 }
 
