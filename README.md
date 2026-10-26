@@ -1,11 +1,11 @@
-# dsh-plugin-healthcheck
+﻿# dsh-plugin-healthcheck
 
 > DSH 插件健康检查 —— 装完新插件后**不重启后端**即可验证插件是否会导致事故。
 > 纯静态检查 + 配置组合 + 隔离试跑 + 木马扫描，发现即修复（自动修复 / 自动回滚 / 预制提示词）。
 
 `#dsh-plugin` · DeepSeek Harness (DSH) · TypeScript · turtle-ui
 
-## 关于这个 fork（0.2.4）
+## 关于这个 fork（0.2.5）
 
 上游 [`chenw2759-wq/dsh-plugin-healthcheck`](https://github.com/chenw2759-wq/dsh-plugin-healthcheck) 0.1.0 针对 DSH `0.1.0-rc.6`。在 DSH 桌面版 `0.2.1-rc.x` 上，它装得上但**完全没有反应**，实测是三层独立故障叠在一起：
 
@@ -15,7 +15,7 @@
 
 本 fork 的改动：
 
-| 适配点 | 上游 0.1.0 | 本 fork 0.2.4 |
+| 适配点 | 上游 0.1.0 | 本 fork 0.2.5 |
 |---|---|---|
 | `!!js` YAML schema | 静态 `import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'` | 用 `js-yaml` 的 `Type` 自建（支持 `!!js` / `!!js/function` / sequence / mapping），对 harness 核心包**零运行时依赖** |
 | harness 安装根 | `createRequire().resolve('@deepseek-ai/dsh-app-boot/package.json')`，失败即抛 | 三级回退：`$DSH_HOME/profiles/node_modules` → `createRequire` → `<exe>/resources/app.asar/dsh/node_modules`；全失败返回 `undefined`，inventory 降级成 `builtin: []` 而不是 400 |
@@ -29,7 +29,7 @@
 | 高危副本（C3） | 一律提供「一键删除副本」 | 本机没有共享层 `~/.dsh/profiles/node_modules` 时降级为提示词——删掉副本反而让包彻底解析不到 |
 | `~/.dsh/cordis.patch.yml` 缺失 | 自动回滚写文件即失败 | `rollbackPlugin()` 缺文件时先建 `[]` 再写；`undoRollback()` 缺文件直接返回「无需撤销」 |
 | 木马扫描噪声 | 注释、测试夹具、UI 文案里的关键字一律计分（本机 54 处命中全是误报） | 先 `maskComments()` 遮掉 `/* */` 与 `//`（含字符串内的 `//` 保护）再匹配；跳过 `test/spec/fixture/mock/bench` 类文件 |
-| Windows 命令检查 | 把 Linux/macOS 分支里的 `getconf`/`xattr`/`gio`/`open`/`xdg-open` 报成缺失 | `POSIX_ONLY_COMMANDS` 在 win32 上直接跳过 |
+| Windows 命令检查 | 遍历整棵树、把 Linux/macOS 分支里的 `getconf`/`xattr`/`gio`/`open`/`xdg-open` 报成缺失 | `POSIX_ONLY_COMMANDS` 在 win32 上直接跳过；只扫宿主真正加载的 `lib/`（无则 `dist/`，再否则整棵树并剔除 `tools`/`scripts`/`skills`/`docs`/`test` 等开发期目录），不再把 `tools/smoke-test.mjs`、`skills/*/render-graphs.js` 里的 `pnpm`、`dot` 当成运行时依赖 |
 | 已有误报 | 无处置手段，每次扫描都重复出现 | 「已复核白名单」：结果行右侧「忽略」按钮 → 写入 `~/.dsh/storages/healthcheck/allowlist.json`，下次扫描不再出现，历史记录仍保留原始明细 |
 
 注意事项：

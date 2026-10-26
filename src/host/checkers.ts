@@ -360,12 +360,32 @@ export function checkWindowsCommands(ctx: CheckerContext, row: PluginRow): Check
 /** Collect bare command names referenced by execFile/spawn in a plugin tree. */
 function collectCommandRefs(root: string): string[] {
   const found = new Set<string>()
+  // 只扫宿主真正加载的运行时目录：lib/ → dist/ → 整棵树（剔除开发期目录）。
+  // 否则 tools/smoke-test.mjs、skills/*/render-graphs.js 这类脚本会把 pnpm、dot
+  // 之类「只在开发机上用」的命令算成插件运行时依赖。
+  const DEV_DIRS = new Set([
+    'node_modules',
+    '.git',
+    'dist',
+    'tools',
+    'scripts',
+    'examples',
+    'example',
+    'dev',
+    'docs',
+    'skills',
+    'test',
+    'tests',
+    '__tests__',
+  ])
+  const scanRoot = [join(root, 'lib'), join(root, 'dist')].find((dir) => existsSync(dir)) ?? root
   const scan = (dir: string, depth: number): void => {
     if (depth > 4 || !existsSync(dir)) return
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name)
       if (entry.isDirectory()) {
-        if (!['node_modules', '.git', 'dist'].includes(entry.name)) scan(path, depth + 1)
+        const skip = scanRoot === root ? DEV_DIRS.has(entry.name) : entry.name === 'node_modules'
+        if (!skip) scan(path, depth + 1)
         continue
       }
       if (!/\.(js|mjs|cjs|ts|yml|yaml|json)$/.test(entry.name)) continue
@@ -380,7 +400,7 @@ function collectCommandRefs(root: string): string[] {
       }
     }
   }
-  scan(root, 0)
+  scan(scanRoot, 0)
   return [...found]
 }
 
