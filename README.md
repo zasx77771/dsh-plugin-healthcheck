@@ -5,7 +5,7 @@
 
 `#dsh-plugin` · DeepSeek Harness (DSH) · TypeScript · turtle-ui
 
-## 关于这个 fork（0.2.2）
+## 关于这个 fork（0.2.4）
 
 上游 [`chenw2759-wq/dsh-plugin-healthcheck`](https://github.com/chenw2759-wq/dsh-plugin-healthcheck) 0.1.0 针对 DSH `0.1.0-rc.6`。在 DSH 桌面版 `0.2.1-rc.x` 上，它装得上但**完全没有反应**，实测是三层独立故障叠在一起：
 
@@ -15,7 +15,7 @@
 
 本 fork 的改动：
 
-| 适配点 | 上游 0.1.0 | 本 fork 0.2.2 |
+| 适配点 | 上游 0.1.0 | 本 fork 0.2.4 |
 |---|---|---|
 | `!!js` YAML schema | 静态 `import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'` | 用 `js-yaml` 的 `Type` 自建（支持 `!!js` / `!!js/function` / sequence / mapping），对 harness 核心包**零运行时依赖** |
 | harness 安装根 | `createRequire().resolve('@deepseek-ai/dsh-app-boot/package.json')`，失败即抛 | 三级回退：`$DSH_HOME/profiles/node_modules` → `createRequire` → `<exe>/resources/app.asar/dsh/node_modules`；全失败返回 `undefined`，inventory 降级成 `builtin: []` 而不是 400 |
@@ -28,15 +28,29 @@
 | 依赖可解析（C4） | 每个依赖 spawn 一次 `import.meta.resolve`，宿主注入的 external 与「只有子路径导出」的包全被误报 | 跳过宿主注入白名单（`@deepseek-ai/*`、`react*`）；改为「磁盘上有该包即视为可解析」+「插件真的 import 了才报」，不再起子进程 |
 | 高危副本（C3） | 一律提供「一键删除副本」 | 本机没有共享层 `~/.dsh/profiles/node_modules` 时降级为提示词——删掉副本反而让包彻底解析不到 |
 | `~/.dsh/cordis.patch.yml` 缺失 | 自动回滚写文件即失败 | `rollbackPlugin()` 缺文件时先建 `[]` 再写；`undoRollback()` 缺文件直接返回「无需撤销」 |
+| 木马扫描噪声 | 注释、测试夹具、UI 文案里的关键字一律计分（本机 54 处命中全是误报） | 先 `maskComments()` 遮掉 `/* */` 与 `//`（含字符串内的 `//` 保护）再匹配；跳过 `test/spec/fixture/mock/bench` 类文件 |
+| Windows 命令检查 | 把 Linux/macOS 分支里的 `getconf`/`xattr`/`gio`/`open`/`xdg-open` 报成缺失 | `POSIX_ONLY_COMMANDS` 在 win32 上直接跳过 |
+| 已有误报 | 无处置手段，每次扫描都重复出现 | 「已复核白名单」：结果行右侧「忽略」按钮 → 写入 `~/.dsh/storages/healthcheck/allowlist.json`，下次扫描不再出现，历史记录仍保留原始明细 |
 
 注意事项：
 
 - 本仓库**直接改构建产物**（`lib/*.js`）。原因：`@deepseek-ai/dsh-client-*` 在 npm 上只有 `0.0.1-rc.1` 占位版，没有 0.2.x 的包和 `.d.ts`，`pnpm build` 无法在外部环境跑通。`lib/client.js` 因此是手写的，与 `src/client/*.tsx` 不同步——源码仅供参考，原构建产物留在 `lib/client.built-upstream.js`。
-- `lib/index.js` 的宿主侧改动与 `src/host/*.ts` 是同步的，但同样以 `lib/` 为准。
+- `lib/index.js` 的宿主侧改动与 `src/host/*.ts` 是同步的，但同样以 `lib/` 为准。例外：0.2.4 新增的「已复核白名单」（`readAllowlist` / `applyAllowlist` / `/healthcheck/allowlist` 路由）目前只落在 `lib/index.js` 与 `lib/client.js`，`src/` 尚未回写。
 - `lib/types/**/*.d.ts` 仍是上游生成的声明，未按本次改动重建（只影响类型提示，不影响运行时）。
 - 装完仍需**重启 DSH**（客户端模块按进程缓存）后硬刷新页面，设置面板才会出现「插件检测」。宿主侧是否挂上可看 `~/.dsh/storages/healthcheck/host-mount.log`。
 - 面板里的 L1/L2 依赖 harness 的 `dsh-app-boot` 等内部包，由宿主解析，插件目录里不要放这些包的副本。
 - 冒烟自检（无需装任何 harness 包、无需 React）：`node scripts/verify-client.mjs` —— stub `window.__ModuleLoader__` + 迷你 hooks 引擎 + fetch stub，跑 `apply` 并渲染一次页面，断言 15 项（注册项、label、缺 slots 不抛异常、inventory 数据真的进 DOM）。
+
+### 已复核白名单（allowlist）
+
+静态扫描（尤其木马模式库）必然有误报：正规插件的 UI 文案、脱敏字段名表、国内镜像 URL 都会命中。与其反复看同一批误报，不如把它们标成「已复核」：
+
+- 面板上每条结果右侧有「忽略」按钮 —— 点一下即写入 `~/.dsh/storages/healthcheck/allowlist.json`，本次扫描立即从列表移除，下次扫描不再出现。
+- 条目形如 `{ "plugin": "dshmarket", "code": "malware-scan", "note": "UI 文案 + 国内镜像 URL", "at": "2026-10-26T…" }`；`plugin: "*"` 表示所有插件，`code` 省略或 `"*"` 表示该插件的全部检查项。
+- 状态行会显示「另有 N 条已复核忽略」，剔除的数量通过 `ignored` 字段回报，`history.json` 里保留原始明细（随时可查、可恢复）。
+- HTTP：`GET /healthcheck/allowlist` 列出；`POST /healthcheck/allowlist {plugin, code?, note?}` 新增；`DELETE /healthcheck/allowlist?plugin=…&code=…` 移除。
+
+原则：白名单只压缩「已人工确认」的噪声，**不会**自动吞掉新出现的命中 —— 新插件、新代码路径照样会报出来。
 
 ## 截图
 
