@@ -318,6 +318,11 @@ function collectRuntimeImports(root: string): Set<string> {
 }
 
 /**
+ * POSIX/macOS-only helpers — missing on Windows by design, not a defect.
+ */
+const POSIX_ONLY_COMMANDS = new Set(['getconf', 'xattr', 'gio', 'open', 'xdg-open', 'notify-send', 'osascript', 'say', 'pbcopy', 'pbpaste', 'lsattr', 'chattr'])
+
+/**
  * C5 — Windows 命令可用性（防 dsh-skin CLI not found 复发）。
  * 扫描插件对 execFile/spawn 的裸命令引用，验证注册表 PATH 中能找到真 .exe。
  */
@@ -329,6 +334,9 @@ export function checkWindowsCommands(ctx: CheckerContext, row: PluginRow): Check
   const commands = collectCommandRefs(root)
   for (const command of commands) {
     if (/[\\/]/.test(command) || command.endsWith('.exe')) continue
+    // POSIX/macOS-only helpers live behind platform branches: on Windows they
+    // are expected to be missing and cannot break the backend.
+    if (POSIX_ONLY_COMMANDS.has(command)) continue
     let found = false
     try {
       const out = execFileSync('where.exe', [command], { encoding: 'utf8', timeout: 10_000 })
