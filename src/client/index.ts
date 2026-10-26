@@ -53,19 +53,21 @@ export interface HealthcheckSlots {
   }, component: unknown) => void
 }
 
-/** Required services. */
-export const inject = ['slots', 'locale']
+/** Optional services: every one is probed at apply time. */
+export const inject: string[] = []
 
 /**
  * Apply the browser half: dictionaries, then one settings.section entry.
  *
- * The slot lookup is defensive (`ctx.get` instead of `ctx.slots`) so a
- * harness build without the slot service logs nothing and simply shows no
- * panel, instead of failing the whole client boot.
+ * Both services are read through `ctx.get` and guarded: a client runtime that
+ * does not expose one of them would otherwise leave the whole module
+ * unapplied, which is exactly how a settings panel disappears silently.
  * @param ctx - client root context.
  */
 export function apply(ctx: HealthcheckClientContext): void {
-  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-plugin-healthcheck: dictionaries')
+  const locale = (ctx.get('locale') ?? ctx.locale) as HealthcheckClientContext['locale'] | undefined
+  const fallbackT = locale === undefined ? (key: HealthcheckKey): string => key : locale.bind(NS)
+  if (locale !== undefined) ctx.effect(() => locale.register(NS, { zh, en }), 'dsh-plugin-healthcheck: dictionaries')
 
   const slots = (ctx.get('slots') ?? ctx.slots) as HealthcheckSlots | undefined
   if (slots === undefined) return
@@ -74,8 +76,8 @@ export function apply(ctx: HealthcheckClientContext): void {
     name: 'settings.section',
     id: 'plugin-healthcheck',
     order: 80,
-    label: () => ctx.locale.bind(NS)('nav'),
+    label: () => fallbackT('nav'),
     locale: NS,
-    inject: () => ({ fallbackT: ctx.locale.bind(NS) }),
+    inject: () => ({ fallbackT }),
   }, HealthcheckSection))
 }

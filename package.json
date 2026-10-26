@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-healthcheck",
   "description": "DSH 插件健康检查：设置面板内的「插件检测」向导 — L0 静态检查（files 白名单/依赖声明/高危副本/依赖可解析/Windows 命令/lockfile 一致性）+ L1 配置组合检查 + L2 隔离试跑（子进程 boot 全树），发现即自动回滚（写 home patch 前弹确认），复杂问题打包预制提示词交给 agent 修复。铁律：只修改插件代码与配置层，严禁修改 harness 源码。",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "repository": {
     "type": "git",
@@ -39,10 +39,8 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings"
-      ],
+      "inject": [],
+      "immediately": true,
       "platform": "web"
     }
   },

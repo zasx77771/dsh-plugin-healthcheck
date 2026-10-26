@@ -4,7 +4,7 @@
  * @module dsh-plugin-healthcheck/host/env
  */
 
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
@@ -22,6 +22,28 @@ export const HIGH_RISK_PACKAGES = [
 /** Resolve the harness home exactly as the dsh launcher does. */
 export function resolveHome(): string {
   return process.env.DSH_HOME ?? join(homedir(), '.dsh')
+}
+
+/**
+ * Append one line to `$DSH_HOME/storages/healthcheck/host-mount.log`.
+ *
+ * Nothing about this plugin is observable before `apply` runs: a plugin that
+ * fails to import, or that waits forever on a service the runtime never
+ * provides, is silent in every surface a user can see. This beacon answers
+ * "did the host load me at all?" from the filesystem. It never throws — a
+ * diagnostic must not be able to break the plugin it instruments.
+ * @param stage - short label, e.g. `"import"` or `"apply:done"`.
+ * @param detail - extra context.
+ */
+export function traceMount(stage: string, detail = ''): void {
+  try {
+    const dir = join(resolveHome(), 'storages', 'healthcheck')
+    mkdirSync(dir, { recursive: true })
+    const line = `${new Date().toISOString()} pid=${process.pid} stage=${stage} node=${process.versions.node} profile=${process.env.DSH_PROFILE ?? '-'} ${detail}\n`
+    writeFileSync(join(dir, 'host-mount.log'), line, { flag: 'a' })
+  } catch {
+    // diagnostics only
+  }
 }
 
 /**
