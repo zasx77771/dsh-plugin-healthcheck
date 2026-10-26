@@ -23,6 +23,7 @@
 - 本仓库**直接改构建产物**（`lib/*.js`）并在 `src/*.ts` 同步同等改动。原因：`@deepseek-ai/dsh-client-*` 在 npm 上只有 `0.0.1-rc.1` 占位版，没有 0.2.x 的包和 `.d.ts`，`pnpm build` 无法在外部环境跑通。若你手上有对应版本的类型包，建议改为在 `src/` 里重新构建。
 - 装完仍需**重启 DSH**（客户端模块按进程缓存）后硬刷新页面，设置面板才会出现「插件检测」。
 - 面板里的 L1/L2 在 0.2.x 桌面版下依赖 harness 的 `dsh-app-boot` 等内部包；由宿主解析，插件目录里不要放这些包的副本。
+- 冒烟自检（无需装任何 harness 包）：`node scripts/verify-client.mjs` —— 用 `window.__ModuleLoader__` 模拟宿主加载浏览器那一半，断言 `settings.section` 注册项、`label` 绑定与 `fallbackT` 兜底，并验证缺少 slot 服务时不抛异常。
 
 ## 截图
 
