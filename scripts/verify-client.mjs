@@ -1,97 +1,156 @@
-// Verifies the browser half the way the DSH web shell loads it
-// (window.__ModuleLoader__.load + require("react")), with no browser and no
-// harness packages installed:
+// Offline smoke test for the hand-written client bundle.
 //
-//   node scripts/verify-client.mjs [path/to/lib/client.js]
+// The harness bundles React inside its frontend, so no react copy exists on disk
+// to render with. This script stubs the loader and a minimal hooks engine, runs
+// `apply`, then executes the settings component and walks the returned element
+// tree — enough to catch the failure modes that would break the app: async
+// factories, apply() throwing, and render-time crashes.
 //
-// Checks:
-//   1. apply() registers exactly one settings.section row;
-//   2. the row carries a locale-bound label, `locale`, and a fallbackT injector
-//      (0.2.x shells no longer always inject `t` into the component);
-//   3. apply() does not throw when the slot service is absent — the failure mode
-//      that made the panel vanish silently on DSH 0.2.1.
+//   node scripts/verify-client.mjs
 import { readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const bundle = resolve(process.argv[2] ?? join(root, 'lib', 'client.js'))
+const here = dirname(fileURLToPath(import.meta.url))
+const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+const failures = []
+function check(name, condition, detail) {
+  if (condition) {
+    console.log(`ok   ${name}`)
+    return
+  }
+  failures.push(name)
+  console.log(`FAIL ${name}${detail === undefined ? '' : ` — ${detail}`}`)
+}
+
+// ── stubs ───────────────────────────────────────────────────────────────────
 
 let captured
-const react = {
-  useRef: (initial) => ({ current: initial }),
-  useState: (initial) => [initial, () => {}],
-  useEffect: () => {},
-  useCallback: (fn) => fn,
-  useMemo: (fn) => fn(),
-  default: {},
+const effects = []
+let hookCursor = 0
+let hookValues = []
+
+const React = {
+  createElement(type, props, ...children) {
+    return { type, props: props ?? {}, children: children.flat() }
+  },
+  useState(initial) {
+    const index = hookCursor
+    hookCursor += 1
+    if (hookValues.length <= index) hookValues[index] = initial
+    const set = (next) => {
+      hookValues[index] = typeof next === 'function' ? next(hookValues[index]) : next
+    }
+    return [hookValues[index], set]
+  },
+  useEffect(effect) {
+    effects.push(effect)
+  },
 }
 
-globalThis.window = { __ModuleLoader__: { load: (module) => { captured = module } } }
-
-const requireStub = (name) => {
-  if (name === 'react') return react
-  if (name === 'react/jsx-runtime') return { jsx: () => null, jsxs: () => null, Fragment: Symbol('Fragment') }
-  throw new Error(`unexpected module require: ${name}`)
+globalThis.window = {
+  __ModuleLoader__: {
+    load(module) {
+      captured = module
+    },
+  },
 }
 
-const source = readFileSync(bundle, 'utf8')
-new Function('window', `${source}\nreturn undefined;`)(globalThis.window)
-if (captured === undefined) throw new Error('bundle never called window.__ModuleLoader__.load')
+const fetchCalls = []
+globalThis.fetch = async (path) => {
+  fetchCalls.push(String(path))
+  return {
+    status: 200,
+    json: async () => ({
+      ok: true,
+      value: {
+        profileName: 'desktop',
+        profile: [{ name: 'dsh-mnemon' }],
+        builtin: [],
+        counts: { profile: 19, builtin: 190, total: 209 },
+      },
+    }),
+  }
+}
 
-const mod = captured.factory(requireStub)
-if (typeof mod.apply !== 'function') throw new Error('bundle exports no apply()')
+const requireShim = (spec) => {
+  if (spec === 'react') return React
+  throw new Error(`unexpected require: ${spec}`)
+}
+
+// ── load + apply ────────────────────────────────────────────────────────────
+
+// eslint-disable-next-line no-new-func
+new Function('window', source)(globalThis.window)
+check('bundle registers a module with the loader', captured !== undefined)
+check('module id matches the package name', captured?.id === 'dsh-plugin-healthcheck', captured?.id)
+
+const exportsObject = captured.factory(requireShim)
+check('exports.name', exportsObject.name === 'dsh-plugin-healthcheck', exportsObject.name)
+check('exports.inject lists slots+locale', JSON.stringify(exportsObject.inject) === '["slots","locale"]', JSON.stringify(exportsObject.inject))
+check('exports.apply is callable', typeof exportsObject.apply === 'function')
 
 let registered
-const makeCtx = (withSlots) => {
-  const ctx = {
-    effect: (fn) => {
-      const disposer = fn()
-      return typeof disposer === 'function' ? disposer : () => {}
-    },
-    get: (name) => (name === 'slots' && withSlots ? ctx.slots : undefined),
-    locale: { register: () => () => {}, bind: (ns) => (key) => `${ns}:${key}` },
-  }
-  if (withSlots) {
-    ctx.slots = {
-      inject: (name, callback) => callback(),
-      register: (definition) => { registered = definition },
-    }
-  }
-  return ctx
+const slots = {
+  inject(name, factory) {
+    registered = { name, contribution: factory() }
+  },
+  register(options, component) {
+    return { options, component }
+  },
 }
 
-const results = []
-const check = (ok, detail) => results.push([ok, detail])
+exportsObject.apply({ get: () => slots, locale: { bind: () => (key) => key } })
+check('registers into settings.section', registered?.name === 'settings.section', registered?.name)
+check('contribution id', registered?.contribution?.options?.id === 'dsh-plugin-healthcheck')
+check('contribution order', registered?.contribution?.options?.order === 80)
+check('contribution label is 插件检测', registered?.contribution?.options?.label?.() === '插件检测')
+check('component provided', typeof registered?.contribution?.component === 'function')
 
-mod.apply(makeCtx(true))
-check(registered !== undefined, 'settings.section row registered')
-if (registered !== undefined) {
-  const label = registered.label()
-  const injected = registered.inject?.() ?? {}
-  check(registered.name === 'settings.section', `name=${registered.name}`)
-  check(registered.id === 'plugin-healthcheck', `id=${registered.id}`)
-  check(registered.order === 80, `order=${registered.order}`)
-  check(registered.locale === 'plugin-healthcheck', `locale=${registered.locale}`)
-  check(label === 'plugin-healthcheck:nav', `label=${label}`)
-  check(typeof injected.fallbackT === 'function', 'inject().fallbackT is a function')
-  check(injected.fallbackT?.('nav') === 'plugin-healthcheck:nav', `fallbackT('nav')=${injected.fallbackT?.('nav')}`)
+let threw = false
+try {
+  exportsObject.apply({ get: () => undefined })
+} catch {
+  threw = true
 }
+check('apply tolerates a missing slots service', threw === false)
+
+// ── render, run effects, re-render ──────────────────────────────────────────
+
+function renderToString(node) {
+  if (node === null || node === undefined || node === false) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(renderToString).join('')
+  if (typeof node.type === 'function') return renderToString(node.type(node.props))
+  const inner = (node.children ?? []).map(renderToString).join('')
+  return `<${node.type}>${inner}</${node.type}>`
+}
+
+let tree = ''
+try {
+  hookCursor = 0
+  hookValues = []
+  tree = renderToString(registered.contribution.component({ fallbackT: (key) => key }))
+} catch (error) {
+  check('component renders', false, String(error && error.stack))
+}
+
+check('render shows the page title', tree.includes('插件检测'), tree.slice(0, 120))
 
 try {
-  registered = undefined
-  mod.apply(makeCtx(false))
-  check(registered === undefined, 'no slots => no throw, no registration')
+  for (const effect of effects) {
+    const cleanup = effect()
+    if (typeof cleanup === 'function') cleanup()
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  hookCursor = 0
+  const again = renderToString(registered.contribution.component({ fallbackT: (key) => key }))
+  check('inventory data lands in the DOM', again.includes('配置集 desktop'), again.slice(0, 240))
+  check('plugin count rendered', again.includes('19'), again.slice(0, 240))
 } catch (error) {
-  check(false, `no slots => threw: ${error.message}`)
+  check('effects run cleanly', false, String(error && error.message))
 }
 
-let failed = false
-console.log(`module: ${captured.id}`)
-console.log(`inject: ${JSON.stringify(mod.inject)}`)
-for (const [ok, detail] of results) {
-  if (!ok) failed = true
-  console.log(`${ok ? 'ok  ' : 'FAIL'}  ${detail}`)
-}
-console.log(failed ? '\nclient half: FAILED' : '\nclient half: OK')
-process.exit(failed ? 1 : 0)
+console.log(failures.length === 0 ? '\nall checks passed' : `\n${failures.length} check(s) failed`)
+process.exitCode = failures.length === 0 ? 0 : 1
