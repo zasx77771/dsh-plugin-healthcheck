@@ -5,26 +5,35 @@
 
 `#dsh-plugin` · DeepSeek Harness (DSH) · TypeScript · turtle-ui
 
-## 关于这个 fork（0.2.0）
+## 关于这个 fork（0.2.1）
 
-上游 [`chenw2759-wq/dsh-plugin-healthcheck`](https://github.com/chenw2759-wq/dsh-plugin-healthcheck) 0.1.0 针对 DSH `0.1.0-rc.6`。在 DSH 桌面版 `0.2.1-rc.x` 上装得上、跑不起来：插件声明了已不存在的 `@deepseek-ai/dsh-client-runtime`，客户端那一半因此**静默不 apply**（设置里看不到「插件检测」），宿主侧又把 profile 名硬编码成 `web`（桌面版跑的是 `desktop`，面板里会显示 0 个插件）。本 fork 修正这些点，其余逻辑与上游一致：
+上游 [`chenw2759-wq/dsh-plugin-healthcheck`](https://github.com/chenw2759-wq/dsh-plugin-healthcheck) 0.1.0 针对 DSH `0.1.0-rc.6`。在 DSH 桌面版 `0.2.1-rc.x` 上，它装得上但**完全没有反应**，实测是三层独立故障叠在一起：
 
-| 适配点 | 上游 0.1.0 | 本 fork 0.2.0 |
+1. **bundle 的 `package.json` 必须是合法 UTF-8 JSON。** 宿主解析失败时只打一行 `dsh: skipping profile bundle "dsh-plugin-healthcheck": SyntaxError …` 就把整条 bundle 跳过，面板自然一无所有。用 PowerShell 5.1 改含中文的 manifest 特别容易踩（默认按 ANSI 解码/回写），改这类文件请用 node 或 `-Encoding UTF8`。
+2. **host 入口不能静态 import `@deepseek-ai/*`。** 上游在 `lib/index.js` 顶部 import 了 `@deepseek-ai/cordis-plugin-include`（它只是 devDependency），桌面版进程里解析不到，异常逃出路由 → `/healthcheck/inventory` 直接 400。而补一份副本又会牵出 `cordis-plugin-loader`、`cordis`、`cosmokit` 整条核心链（正是本插件自己检测的 `harness-copy` 风险）。
+3. **客户端 inject 了 0.2.x 已不存在的 `@deepseek-ai/dsh-client-runtime`**，cordis 等不到这个服务就静默不 apply，设置里没有「插件检测」。
+
+本 fork 的改动：
+
+| 适配点 | 上游 0.1.0 | 本 fork 0.2.1 |
 |---|---|---|
-| `dsh.client.inject` | `dsh-client-runtime` + `dsh-client-locale` | `dsh-client-locale` + `dsh-client-ui-settings`（0.2.x 实际存在的包） |
-| 客户端 context 类型 | `import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'` | 本地声明最小接口（该包只发布到 0.1.0-rc.6，0.2.x 无类型包） |
-| slot 注册 | `ctx.slots.register(...)` 未诊断 | 先 `ctx.get('slots')` 判空再注册，并 `inject: () => ({ fallbackT })` 兜住 0.2.x 不再自动注入 `t` 的情况 |
+| `!!js` YAML schema | 静态 `import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'` | 用 `js-yaml` 的 `Type` 自建（支持 `!!js` / `!!js/function` / sequence / mapping），对 harness 核心包**零运行时依赖** |
+| harness 安装根 | `createRequire().resolve('@deepseek-ai/dsh-app-boot/package.json')`，失败即抛 | 三级回退：`$DSH_HOME/profiles/node_modules` → `createRequire` → `<exe>/resources/app.asar/dsh/node_modules`；全失败返回 `undefined`，inventory 降级成 `builtin: []` 而不是 400 |
+| `dsh.client` | 声明了已删除的 `dsh-client-runtime` | `{ platform: "web", inject: [] }`，客户端 `inject = ["slots","locale"]` |
+| 客户端实现 | 0.1.0 的构建产物（92 KB，JSX 编译结果） | 手写同步 factory-CJS：无 JSX、只用 `React.createElement`、`apply()` 全 `try/catch`，无 slots 服务时安静退出 |
+| slot 注册 | `ctx.slots.register(...)` 未诊断 | 先 `ctx.get('slots')` 判空再 `slots.inject('settings.section', …)`，带 `label` 与 `fallbackT` |
 | profile 解析 | 硬编码 `'web'`（4 处） | `resolveProfileName()`：`DSH_PROFILE` → `desktop` → `web` → 其它有 manifest 的 profile |
 | 修复提示词 | 写死作者机器路径（`M:\dsh\node_modules`、`C:/Users/cysja/...`、`~/.dsh/profiles/web`） | 用运行时的 `ctx.profileDir` / `ctx.home` / `~/.dsh/profiles/<profile>` |
-| `peerDependencies` | 4 个 `@deepseek-ai/*` peer | 只留 `react`（避免 pnpm `autoInstallPeers` 装出核心包副本，即本插件自己检测的 `harness-copy`） |
+| `peerDependencies` | 4 个 `@deepseek-ai/*` peer | 只留 `react`（避免 pnpm `autoInstallPeers` 装出核心包副本） |
 
 注意事项：
 
-- 本仓库**直接改构建产物**（`lib/*.js`）并在 `src/*.ts` 同步同等改动。原因：`@deepseek-ai/dsh-client-*` 在 npm 上只有 `0.0.1-rc.1` 占位版，没有 0.2.x 的包和 `.d.ts`，`pnpm build` 无法在外部环境跑通。若你手上有对应版本的类型包，建议改为在 `src/` 里重新构建。
+- 本仓库**直接改构建产物**（`lib/*.js`）。原因：`@deepseek-ai/dsh-client-*` 在 npm 上只有 `0.0.1-rc.1` 占位版，没有 0.2.x 的包和 `.d.ts`，`pnpm build` 无法在外部环境跑通。`lib/client.js` 因此是手写的，与 `src/client/*.tsx` 不同步——源码仅供参考，原构建产物留在 `lib/client.built-upstream.js`。
+- `lib/index.js` 的宿主侧改动与 `src/host/*.ts` 是同步的，但同样以 `lib/` 为准。
 - `lib/types/**/*.d.ts` 仍是上游生成的声明，未按本次改动重建（只影响类型提示，不影响运行时）。
-- 装完仍需**重启 DSH**（客户端模块按进程缓存）后硬刷新页面，设置面板才会出现「插件检测」。
-- 面板里的 L1/L2 在 0.2.x 桌面版下依赖 harness 的 `dsh-app-boot` 等内部包；由宿主解析，插件目录里不要放这些包的副本。
-- 冒烟自检（无需装任何 harness 包）：`node scripts/verify-client.mjs` —— 用 `window.__ModuleLoader__` 模拟宿主加载浏览器那一半，断言 `settings.section` 注册项、`label` 绑定与 `fallbackT` 兜底，并验证缺少 slot 服务时不抛异常。
+- 装完仍需**重启 DSH**（客户端模块按进程缓存）后硬刷新页面，设置面板才会出现「插件检测」。宿主侧是否挂上可看 `~/.dsh/storages/healthcheck/host-mount.log`。
+- 面板里的 L1/L2 依赖 harness 的 `dsh-app-boot` 等内部包，由宿主解析，插件目录里不要放这些包的副本。
+- 冒烟自检（无需装任何 harness 包、无需 React）：`node scripts/verify-client.mjs` —— stub `window.__ModuleLoader__` + 迷你 hooks 引擎 + fetch stub，跑 `apply` 并渲染一次页面，断言 15 项（注册项、label、缺 slots 不抛异常、inventory 数据真的进 DOM）。
 
 ## 截图
 
@@ -138,13 +147,18 @@ Error: dsh: plugin tree failed to load: loader fibers failed
 # 1. 克隆到插件目录
 mkdir -p ~/.dsh/plugins
 cd ~/.dsh/plugins
-git clone https://github.com/chenw2759-wq/dsh-plugin-healthcheck.git
+git clone https://github.com/zasx77771/dsh-plugin-healthcheck.git
 
-# 2. 装进 web profile
-npx @deepseek-ai/dsh plugin --profile web add "file:$HOME/.dsh/plugins/dsh-plugin-healthcheck"
+# 2. 装进 profile（桌面版是 desktop，CLI/Web 版是 web）
+cd ~/.dsh/profiles/desktop
+corepack pnpm@11 add "link:$HOME/.dsh/plugins/dsh-plugin-healthcheck"
+#    再把 dsh-plugin-healthcheck 追加进该 package.json 的 dsh.profile.bundles
+#    （桌面版的 profile 由 Electron 托管，`dsh plugin --profile desktop add` 会被拒绝）
 
-# 3. 重启后端，打开左下角设置 → 「插件检测」
+# 3. 重启 DSH，打开左下角设置 →「插件检测」
 ```
+
+> 用 `link:` 安装不会触发 `prepare`/`tsdown` 构建，这点很重要：本 fork 的 `lib/` 是手工维护的，重新构建会覆盖掉它。
 
 > Windows 下 `file:` 路径用正斜杠绝对路径，如
 > `file:C:/Users/<你>/.dsh/plugins/dsh-plugin-healthcheck`。
